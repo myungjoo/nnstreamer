@@ -4,7 +4,7 @@
 project('nnstreamer', 'c', 'cpp',
   version: '1.7.2',
   license: ['LGPL-2.1'],
-  meson_version: '>=0.50.0',
+  meson_version: '>=0.49.0',
   default_options: [
     'werror=true',
     'warning_level=1',
@@ -496,9 +496,14 @@ if get_option('enable-test')
   subdir('nnstreamer_example')
 
   # ini file generator template for the plugins from other repository
+  if (get_option('install-test'))
+    unittest_base_dir_ = unittest_base_dir
+  else
+    unittest_base_dir_ = '' # Don't install
+  endif
+
   configure_file(input: 'nnstreamer.ini.in', output: 'nnstreamer-test.ini.in',
-    install: get_option('install-test'),
-    install_dir: unittest_base_dir,
+    install_dir: unittest_base_dir_,
     copy: true,
   )
 
@@ -512,8 +517,7 @@ if get_option('enable-test')
   nnstreamer_test_conf.set('ELEMENT_RESTRICTION_CONFIG', '')
 
   configure_file(input: 'nnstreamer.ini.in', output: 'nnstreamer-test.ini',
-    install: get_option('install-test'),
-    install_dir: unittest_base_dir,
+    install_dir: unittest_base_dir_,
     configuration: nnstreamer_test_conf
   )
 

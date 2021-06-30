@@ -46,11 +46,16 @@ ext_test_template_prefix = 'unittest_tizen_'
 ext_test_template_str = ext_test_template_prefix + 'template.cc.in'
 ext_test_template = files (ext_test_template_str)
 
+if (get_option('install-test'))
+  unittest_base_dir_ = unittest_base_dir
+else
+  unittest_base_dir_ = ''
+endif
+
 configure_file(
   input: ext_test_template_str,
   output: 'subplugin_unittest_template.cc.in',
-  install: get_option('install-test'),
-  install_dir: unittest_base_dir,
+  install_dir: unittest_base_dir_,
   copy: true
 )
 
