@@ -6057,6 +6057,8 @@ TEST_REQUIRE_TFLITE (testTensorFilter, flexToFlex)
   gst_harness_teardown (h);
 }
 
+
+#if ENABLE_PROTOBUF && ENABLE_FLATBUF
 /**
  * @brief Test for flatbuf, flexbuf and protobuf (tensors -> serialized buf -> tensors)
  */
@@ -6446,6 +6448,7 @@ TEST (testConverterSubplugins, flexbufInvalidParam1_n)
   gst_tensors_config_free (&config);
   gst_buffer_unref (in_buf);
 }
+#endif /** ENABLE_FLATBUF && ENABLE_PROTOBUF */
 
 /**
  * @brief Data structure for tensor-crop test.
