@@ -40,7 +40,18 @@ if armnn_support_is_available
     nnstreamer_filter_armnn_sources += join_paths(meson.current_source_dir(), s)
   endforeach
 
-  nnstreamer_filter_armnn_deps = armnn_support_deps + [glib_dep, gst_dep, nnstreamer_dep]
+  if cxx.check_header('armnnCaffeParser/ICaffeParser.hpp')
+    armnn_caffe_dep = declare_dependency(compile_args: '-DENABLE_ARMNN_CAFFE=1')
+    armnn_support_deps = armnn_support_deps + [ armnn_caffe_dep ]
+    message('ARMNN subplugin is built with Caffe parser.')
+  endif
+  if cxx.check_header('armnnTfLiteParser/ITfLiteParser.hpp')
+    armnn_tfl_dep = declare_dependency(compile_args: '-DENABLE_ARMNN_TFLITE=1')
+    armnn_support_deps = armnn_support_deps + [ armnn_tfl_dep ]
+    message('ARMNN subplugin is built with TFLite parser.')
+  endif
+
+  nnstreamer_filter_armnn_deps = armnn_support_deps + [glib_dep, gst_dep, nnstreamer_dep ]
 
   armnn_plugin_lib = shared_library('nnstreamer_filter_armnn',
     nnstreamer_filter_armnn_sources,
