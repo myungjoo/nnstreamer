@@ -232,6 +232,22 @@ if not get_option('mqtt-support').disabled()
   pahomqttc_dep = dependency('paho-mqtt-c', required: false)
 endif
 
+# armnn
+armnn_dep = dependency('', required: false)
+if not get_option('armnn-support').disabled()
+  armnn_dep = dependency('armnn', required: false)
+  if (not armnn_dep.found())
+    armnn_dep = dependency('Armnn', required: false)
+  endif
+  if (not armnn_dep.found())
+    armnn_lib = cxx.find_library('armnn', required: false)
+    pthread_lib = cxx.find_library('pthread', required: false)
+    if (armnn_lib.found() and cxx.check_header('armnn/ArmNN.hpp'))
+      armnn_dep = declare_dependency(dependencies: [ armnn_lib, pthread_lib ])
+    endif
+  endif
+endif
+
 # features registration to be controlled
 #
 # register feature as follows
@@ -275,8 +291,7 @@ features = {
     'project_args': { 'ENABLE_NNFW_RUNTIME': 1 }
   },
   'armnn-support': {
-    'target': 'armnn',
-    'target_alt': 'Armnn',
+    'extra_deps': [ armnn_dep ],
     'project_args': { 'ENABLE_ARMNN': 1 }
   },
   'orcc-support': {
