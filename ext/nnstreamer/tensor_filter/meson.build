@@ -41,13 +41,15 @@ if armnn_support_is_available
   endforeach
 
   if cxx.check_header('armnnCaffeParser/ICaffeParser.hpp')
+    armnn_caffeparserlib = cxx.find_library('armnnCaffeParser', required: true)
     armnn_caffe_dep = declare_dependency(compile_args: '-DENABLE_ARMNN_CAFFE=1')
-    armnn_support_deps = armnn_support_deps + [ armnn_caffe_dep ]
+    armnn_support_deps = armnn_support_deps + [ armnn_caffe_dep, armnn_caffeparserlib ]
     message('ARMNN subplugin is built with Caffe parser.')
   endif
   if cxx.check_header('armnnTfLiteParser/ITfLiteParser.hpp')
+    armnn_tflparserlib = cxx.find_library('armnnTfLiteParser', required: true)
     armnn_tfl_dep = declare_dependency(compile_args: '-DENABLE_ARMNN_TFLITE=1')
-    armnn_support_deps = armnn_support_deps + [ armnn_tfl_dep ]
+    armnn_support_deps = armnn_support_deps + [ armnn_tfl_dep, armnn_tflparserlib ]
     message('ARMNN subplugin is built with TFLite parser.')
   endif
 
