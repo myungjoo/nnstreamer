@@ -1,0 +1,19 @@
+name: meson build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: meson configure
+      run: meson build
+    - name: ninja build
+      run: ninja -C build
