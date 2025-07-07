@@ -2146,6 +2146,19 @@ gst_tensor_transform_transform_caps (GstBaseTransform * trans,
     if (gst_tensors_config_is_flexible (&in_config)) {
       /* output caps is also flexible */
       out_config.info.format = _NNS_TENSOR_FORMAT_FLEXIBLE;
+      
+      /* Even for flexible, populate tensor info for caps negotiation */
+      for (j = 0; j < in_config.info.num_tensors; j++) {
+        in_info = gst_tensors_info_get_nth_info (&in_config.info, j);
+        out_info = gst_tensors_info_get_nth_info (&out_config.info, j);
+
+        gst_tensor_transform_convert_dimension (filter, direction,
+            j, in_info, out_info);
+        if (out_info->type == _NNS_END) {
+          /* types cannot be specified */
+          is_types_not_fixed = TRUE;
+        }
+      }
     } else {
       for (j = 0; j < in_config.info.num_tensors; j++) {
         in_info = gst_tensors_info_get_nth_info (&in_config.info, j);
