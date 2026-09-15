@@ -799,6 +799,112 @@ TEST (nnstreamerFilterPython3, setInputDimRepeatedKeepsObjects)
 }
 
 /**
+ * @brief Arguments of an invoking thread
+ */
+typedef struct {
+  const GstTensorFilterFramework *sp;
+  GstTensorFilterProperties prop;
+  const gchar *model_files[2];
+  void *data;
+  guint seed;
+  guint rounds;
+  guint mismatch;
+} FilterThreadData;
+
+/**
+ * @brief Invoke in a thread of its own the instance it was given, checking and releasing each output.
+ */
+static gpointer
+_python3_invoke_thread (gpointer user_data)
+{
+  FilterThreadData *td = (FilterThreadData *) user_data;
+
+  for (guint i = 0; i < td->rounds; i++) {
+    guint8 in_data[8];
+    GstTensorMemory input, output[2];
+    GstTensorFilterFrameworkEventData event;
+
+    for (guint k = 0; k < sizeof (in_data); k++)
+      in_data[k] = (guint8) (td->seed + i + k);
+    input.data = in_data;
+    input.size = sizeof (in_data);
+    for (guint k = 0; k < 2; k++) {
+      output[k].data = NULL;
+      output[k].size = 4;
+    }
+
+    if (td->sp->invoke (td->sp, &td->prop, td->data, &input, output) != 0) {
+      td->mismatch++;
+      continue;
+    }
+    if (memcmp (output[0].data, in_data, 4) != 0
+        || memcmp (output[1].data, in_data + 4, 4) != 0)
+      td->mismatch++;
+    for (guint k = 0; k < 2; k++) {
+      event.data = output[k].data;
+      td->sp->eventHandler (td->sp, &td->prop, td->data, DESTROY_NOTIFY, &event);
+    }
+  }
+
+  return NULL;
+}
+
+/**
+ * @brief Filters invoked in threads of their own give correct outputs and release them.
+ */
+TEST (nnstreamerFilterPython3, invokeMultiThreadKeepsObjects)
+{
+  FilterThreadData td[4];
+  GThread *threads[4];
+  gchar *model_file = _python3_model_path ("filter_output_cases.py");
+  Py_ssize_t before, after;
+  const GstTensorFilterFramework *sp = nnstreamer_filter_find ("python3");
+
+  ASSERT_NE (sp, nullptr);
+  for (guint t = 0; t < 4; t++) {
+    td[t].sp = sp;
+    td[t].model_files[0] = model_file;
+    td[t].model_files[1] = NULL;
+    td[t].data = NULL;
+    td[t].seed = t * 40;
+    td[t].mismatch = 0;
+    _SetFilterProp (&td[t].prop, "python3", td[t].model_files);
+    td[t].prop.custom_properties = "copy";
+    gst_tensors_info_init (&td[t].prop.input_meta);
+    td[t].prop.input_meta.num_tensors = 1;
+    td[t].prop.input_meta.info[0].type = _NNS_UINT8;
+    gst_tensor_parse_dimension ("8", td[t].prop.input_meta.info[0].dimension);
+    gst_tensors_info_init (&td[t].prop.output_meta);
+    td[t].prop.output_meta.num_tensors = 2;
+    for (guint k = 0; k < 2; k++) {
+      td[t].prop.output_meta.info[k].type = _NNS_UINT8;
+      gst_tensor_parse_dimension ("4", td[t].prop.output_meta.info[k].dimension);
+    }
+    ASSERT_EQ (sp->open (&td[t].prop, &td[t].data), 0);
+    td[t].rounds = 10;
+    _python3_invoke_thread (&td[t]);
+    td[t].rounds = 300;
+  }
+
+  before = py_test_gc_object_count ();
+  ASSERT_GT (before, 0);
+  for (guint t = 0; t < 4; t++)
+    threads[t] = g_thread_new ("invoke", _python3_invoke_thread, &td[t]);
+  for (guint t = 0; t < 4; t++)
+    g_thread_join (threads[t]);
+  after = py_test_gc_object_count ();
+
+  for (guint t = 0; t < 4; t++) {
+    EXPECT_EQ (td[t].mismatch, 0U);
+    sp->close (&td[t].prop, &td[t].data);
+    gst_tensors_info_free (&td[t].prop.input_meta);
+    gst_tensors_info_free (&td[t].prop.output_meta);
+  }
+  EXPECT_LE (after - before, PY_TEST_GC_SLACK);
+  g_free (model_file);
+}
+
+/**
  * @brief Opening the filter again does not grow sys.path.
  */
 TEST (nnstreamerFilterPython3, reopenKeepsSysPath)

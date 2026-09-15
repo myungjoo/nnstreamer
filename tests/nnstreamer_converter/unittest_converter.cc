@@ -933,6 +933,87 @@ TEST (tensorConverterPython, unmappableInput_n)
 }
 
 /**
+ * @brief Arguments of a converting thread
+ */
+typedef struct {
+  const NNStreamerExternalConverter *ex;
+  void *py_core;
+  guint seed;
+  guint rounds;
+  guint mismatch;
+} ConverterThreadData;
+
+/**
+ * @brief Convert in a thread of its own with the instance it was given; the script passes the bytes through.
+ */
+static gpointer
+_python_convert_thread (gpointer user_data)
+{
+  ConverterThreadData *td = (ConverterThreadData *) user_data;
+
+  for (guint i = 0; i < td->rounds; i++) {
+    guint8 expected[8];
+    GstTensorsConfig config;
+    GstBuffer *in_buf, *out_buf;
+
+    /* the first byte selects the passthrough case of converter_output_cases.py when it is above 7 */
+    expected[0] = (guint8) (8 + (td->seed + i) % 200);
+    for (guint k = 1; k < sizeof (expected); k++)
+      expected[k] = (guint8) (td->seed + i + k);
+
+    gst_tensors_config_init (&config);
+    in_buf = gst_buffer_new_wrapped (
+        _g_memdup (expected, sizeof (expected)), sizeof (expected));
+    out_buf = td->ex->convert (in_buf, &config, td->py_core);
+    gst_buffer_unref (in_buf);
+
+    if (!out_buf || gst_buffer_get_size (out_buf) != sizeof (expected)
+        || gst_buffer_memcmp (out_buf, 0, expected, sizeof (expected)) != 0)
+      td->mismatch++;
+    if (out_buf)
+      gst_buffer_unref (out_buf);
+    gst_tensors_config_free (&config);
+  }
+
+  return NULL;
+}
+
+/**
+ * @brief Converters running in threads of their own convert correctly and release what they build.
+ */
+TEST (tensorConverterPython, convertMultiThreadKeepsObjects)
+{
+  ConverterThreadData td[4];
+  GThread *threads[4];
+  Py_ssize_t before, after;
+
+  for (guint t = 0; t < 4; t++) {
+    td[t].py_core = NULL;
+    td[t].ex = _python_open_output_cases (&td[t].py_core);
+    ASSERT_NE (nullptr, td[t].ex);
+    td[t].seed = t * 30;
+    td[t].mismatch = 0;
+    td[t].rounds = 10;
+    _python_convert_thread (&td[t]);
+    td[t].rounds = 300;
+  }
+
+  before = py_test_gc_object_count ();
+  ASSERT_GT (before, 0);
+  for (guint t = 0; t < 4; t++)
+    threads[t] = g_thread_new ("convert", _python_convert_thread, &td[t]);
+  for (guint t = 0; t < 4; t++)
+    g_thread_join (threads[t]);
+  after = py_test_gc_object_count ();
+
+  for (guint t = 0; t < 4; t++) {
+    EXPECT_EQ (0U, td[t].mismatch);
+    td[t].ex->close (&td[t].py_core);
+  }
+  EXPECT_LE (after - before, PY_TEST_GC_SLACK);
+}
+
+/**
  * @brief Opening the python custom converter again does not grow sys.path.
  */
 TEST (tensorConverterPython, reopenKeepsSysPath)
