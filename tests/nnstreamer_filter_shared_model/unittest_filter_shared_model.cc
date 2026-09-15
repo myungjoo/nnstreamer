@@ -18,6 +18,7 @@
 
 static const gchar model_name1[] = "mobilenet_v1_1.0_224_quant.tflite";
 static const gchar model_name2[] = "mobilenet_v2_1.0_224_quant.tflite";
+static const gchar model_name3[] = "mobilenet_v2_1.0_224.tflite";
 static const gchar data_name[] = "orange.png";
 static const gchar shared_key[] = "mobilenet";
 static guint res[2];
@@ -50,10 +51,10 @@ _new_data_cb (GstElement *element, GstBuffer *buffer, gpointer user_data)
 }
 
 /**
- * @brief helper to get base pipeline string
+ * @brief helper to get base pipeline string; a NULL key omits shared-tensor-filter-key
  */
 static void
-_get_pipeline_str (gchar **str, const gchar *model1, const gchar *model2)
+_get_pipeline_str (gchar **str, const gchar *model1, const gchar *model2, const gchar *key)
 {
   const gchar *src_root = g_getenv ("NNSTREAMER_SOURCE_ROOT_PATH");
   gchar *root_path = src_root ? g_strdup (src_root) : g_get_current_dir ();
@@ -63,23 +64,38 @@ _get_pipeline_str (gchar **str, const gchar *model1, const gchar *model2)
       = g_build_filename (root_path, "tests", "test_models", "models", model2, NULL);
   gchar *image_path
       = g_build_filename (root_path, "tests", "test_models", "data", data_name, NULL);
+  gchar *key_prop;
 
   ASSERT_TRUE (g_file_test (model_path1, G_FILE_TEST_EXISTS));
   ASSERT_TRUE (g_file_test (model_path2, G_FILE_TEST_EXISTS));
   ASSERT_TRUE (g_file_test (image_path, G_FILE_TEST_EXISTS));
 
+  key_prop = key ? g_strdup_printf ("shared-tensor-filter-key=%s ", key) : g_strdup ("");
   *str = g_strdup_printf (
       "filesrc location=%s ! pngdec ! videoscale ! imagefreeze ! videoconvert ! "
       "video/x-raw,format=RGB,framerate=10/1 ! tensor_converter ! tee name=t t. ! "
       "queue ! tensor_filter name=filter1 framework=tensorflow-lite model=%s is-updatable=TRUE "
-      "shared-tensor-filter-key=%s ! tensor_sink name=sink1 t. ! "
+      "%s! tensor_sink name=sink1 t. ! "
       "queue ! tensor_filter name=filter2 framework=tensorflow-lite model=%s is-updatable=TRUE "
-      "shared-tensor-filter-key=%s ! tensor_sink name=sink2",
-      image_path, model_path1, shared_key, model_path2, shared_key);
+      "%s! tensor_sink name=sink2",
+      image_path, model_path1, key_prop, model_path2, key_prop);
   g_free (root_path);
   g_free (model_path1);
   g_free (model_path2);
   g_free (image_path);
+  g_free (key_prop);
+}
+
+/**
+ * @brief helper to move the pipeline through PLAYING then PAUSED with a settle sleep after each
+ */
+static void
+_play_then_pause (GstElement *pipeline)
+{
+  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_PLAYING, UNITTEST_STATECHANGE_TIMEOUT), 0);
+  g_usleep (TEST_DEFAULT_SLEEP_TIME);
+  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_PAUSED, UNITTEST_STATECHANGE_TIMEOUT), 0);
+  g_usleep (TEST_DEFAULT_SLEEP_TIME);
 }
 
 /**
@@ -89,7 +105,7 @@ TEST (nnstreamerFilterSharedModel, tfliteSharedModelNotEqual_n)
 {
   gchar *pipeline_str;
   GstElement *pipeline;
-  _get_pipeline_str (&pipeline_str, model_name1, model_name2);
+  _get_pipeline_str (&pipeline_str, model_name1, model_name2, shared_key);
   pipeline = gst_parse_launch (pipeline_str, NULL);
 
   EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_PLAYING, UNITTEST_STATECHANGE_TIMEOUT), 0);
@@ -154,7 +170,7 @@ TEST (nnstreamerFilterSharedModel, tfliteSharedReload)
   gchar *path;
   g_free (root_path);
 
-  _get_pipeline_str (&pipeline_str, model_name1, model_name1);
+  _get_pipeline_str (&pipeline_str, model_name1, model_name1, shared_key);
   pipeline = gst_parse_launch (pipeline_str, NULL);
   g_free (pipeline_str);
   memset (res, 0, sizeof (res));
@@ -171,10 +187,7 @@ TEST (nnstreamerFilterSharedModel, tfliteSharedReload)
   EXPECT_NE (sink2, nullptr);
   g_signal_connect (sink2, "new-data", (GCallback) _new_data_cb, (gpointer) &idx1);
 
-  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_PLAYING, UNITTEST_STATECHANGE_TIMEOUT), 0);
-  g_usleep (TEST_DEFAULT_SLEEP_TIME);
-  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_PAUSED, UNITTEST_STATECHANGE_TIMEOUT), 0);
-  g_usleep (TEST_DEFAULT_SLEEP_TIME);
+  _play_then_pause (pipeline);
 
   /* check two filters have same output */
   EXPECT_NE (res[0], 0U);
@@ -188,10 +201,7 @@ TEST (nnstreamerFilterSharedModel, tfliteSharedReload)
   g_free (new_model_path);
   g_free (path);
 
-  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_PLAYING, UNITTEST_STATECHANGE_TIMEOUT), 0);
-  g_usleep (TEST_DEFAULT_SLEEP_TIME);
-  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_PAUSED, UNITTEST_STATECHANGE_TIMEOUT), 0);
-  g_usleep (TEST_DEFAULT_SLEEP_TIME);
+  _play_then_pause (pipeline);
 
   /* same output with new model */
   EXPECT_NE (res[0], 0U);
@@ -203,6 +213,213 @@ TEST (nnstreamerFilterSharedModel, tfliteSharedReload)
   gst_object_unref (filter2);
   gst_object_unref (sink1);
   gst_object_unref (sink2);
+  gst_object_unref (pipeline);
+}
+
+/**
+ * @brief Test refused reload (unmatched tensors info) to a shared model keeps the old
+ *        interpreter alive and reports the old model path on every sharing core.
+ */
+TEST (nnstreamerFilterSharedModel, tfliteSharedReloadUnmatched_n)
+{
+  gchar *pipeline_str;
+  GstElement *pipeline, *filter1, *filter2, *sink1, *sink2;
+  gint idx0 = 0, idx1 = 1;
+  const gchar *src_root = g_getenv ("NNSTREAMER_SOURCE_ROOT_PATH");
+  gchar *root_path = src_root ? g_strdup (src_root) : g_get_current_dir ();
+  gchar *old_model_path = g_build_filename (
+      root_path, "tests", "test_models", "models", model_name1, NULL);
+  gchar *unmatched_model_path = g_build_filename (
+      root_path, "tests", "test_models", "models", model_name3, NULL);
+  gchar *path1, *path2;
+  guint old;
+  gboolean refused;
+  g_free (root_path);
+
+  _get_pipeline_str (&pipeline_str, model_name1, model_name1, shared_key);
+  pipeline = gst_parse_launch (pipeline_str, NULL);
+  g_free (pipeline_str);
+  memset (res, 0, sizeof (res));
+
+  filter1 = gst_bin_get_by_name (GST_BIN (pipeline), "filter1");
+  ASSERT_TRUE (filter1 != NULL);
+  filter2 = gst_bin_get_by_name (GST_BIN (pipeline), "filter2");
+  ASSERT_TRUE (filter2 != NULL);
+
+  sink1 = gst_bin_get_by_name (GST_BIN (pipeline), "sink1");
+  EXPECT_NE (sink1, nullptr);
+  g_signal_connect (sink1, "new-data", (GCallback) _new_data_cb, (gpointer) &idx0);
+  sink2 = gst_bin_get_by_name (GST_BIN (pipeline), "sink2");
+  EXPECT_NE (sink2, nullptr);
+  g_signal_connect (sink2, "new-data", (GCallback) _new_data_cb, (gpointer) &idx1);
+
+  _play_then_pause (pipeline);
+
+  old = res[0];
+  EXPECT_NE (old, 0U);
+  EXPECT_EQ (res[1], old);
+  memset (res, 0, sizeof (res));
+
+  /* refused reload: unmatched tensors info (float vs quant) */
+  g_object_set (filter1, "model", unmatched_model_path, NULL);
+  g_free (unmatched_model_path);
+
+  g_object_get (filter1, "model", &path1, NULL);
+  g_object_get (filter2, "model", &path2, NULL);
+  EXPECT_STREQ (old_model_path, path1);
+  EXPECT_STREQ (old_model_path, path2);
+  refused = (g_strcmp0 (old_model_path, path1) == 0);
+  g_free (path1);
+  g_free (path2);
+  g_free (old_model_path);
+
+  /* An accepted reload leaves the cores with a freed interpreter, which may hang invoke. */
+  if (refused) {
+    _play_then_pause (pipeline);
+
+    /* both cores still run the old, still-alive interpreter */
+    EXPECT_EQ (res[0], old);
+    EXPECT_EQ (res[1], old);
+  }
+
+  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_NULL, UNITTEST_STATECHANGE_TIMEOUT), 0);
+
+  gst_object_unref (filter1);
+  gst_object_unref (filter2);
+  gst_object_unref (sink1);
+  gst_object_unref (sink2);
+  gst_object_unref (pipeline);
+}
+
+/**
+ * @brief Test a refused reload does not break later, valid shared reloads.
+ */
+TEST (nnstreamerFilterSharedModel, tfliteSharedReloadAfterUnmatched)
+{
+  gchar *pipeline_str;
+  GstElement *pipeline, *filter1, *filter2, *sink1, *sink2;
+  gint idx0 = 0, idx1 = 1;
+  const gchar *src_root = g_getenv ("NNSTREAMER_SOURCE_ROOT_PATH");
+  gchar *root_path = src_root ? g_strdup (src_root) : g_get_current_dir ();
+  gchar *old_model_path = g_build_filename (
+      root_path, "tests", "test_models", "models", model_name1, NULL);
+  gchar *unmatched_model_path = g_build_filename (
+      root_path, "tests", "test_models", "models", model_name3, NULL);
+  gchar *matched_model_path = g_build_filename (
+      root_path, "tests", "test_models", "models", model_name2, NULL);
+  gchar *path;
+  gboolean refused;
+  g_free (root_path);
+
+  _get_pipeline_str (&pipeline_str, model_name1, model_name1, shared_key);
+  pipeline = gst_parse_launch (pipeline_str, NULL);
+  g_free (pipeline_str);
+  memset (res, 0, sizeof (res));
+
+  filter1 = gst_bin_get_by_name (GST_BIN (pipeline), "filter1");
+  ASSERT_TRUE (filter1 != NULL);
+  filter2 = gst_bin_get_by_name (GST_BIN (pipeline), "filter2");
+  ASSERT_TRUE (filter2 != NULL);
+
+  sink1 = gst_bin_get_by_name (GST_BIN (pipeline), "sink1");
+  EXPECT_NE (sink1, nullptr);
+  g_signal_connect (sink1, "new-data", (GCallback) _new_data_cb, (gpointer) &idx0);
+  sink2 = gst_bin_get_by_name (GST_BIN (pipeline), "sink2");
+  EXPECT_NE (sink2, nullptr);
+  g_signal_connect (sink2, "new-data", (GCallback) _new_data_cb, (gpointer) &idx1);
+
+  _play_then_pause (pipeline);
+  EXPECT_NE (res[0], 0U);
+  EXPECT_EQ (res[0], res[1]);
+  memset (res, 0, sizeof (res));
+
+  /* refused reload leaves the model property untouched */
+  g_object_set (filter1, "model", unmatched_model_path, NULL);
+  g_free (unmatched_model_path);
+  g_object_get (filter1, "model", &path, NULL);
+  EXPECT_STREQ (old_model_path, path);
+  refused = (g_strcmp0 (old_model_path, path) == 0);
+  g_free (path);
+  g_free (old_model_path);
+
+  /* An accepted reload leaves the cores with a freed interpreter, which may hang a reload. */
+  if (refused) {
+    /* a later, compatible reload still succeeds */
+    g_object_set (filter1, "model", matched_model_path, NULL);
+    g_object_get (filter1, "model", &path, NULL);
+    EXPECT_STREQ (matched_model_path, path);
+    g_free (path);
+
+    _play_then_pause (pipeline);
+    EXPECT_NE (res[0], 0U);
+    EXPECT_EQ (res[0], res[1]);
+  }
+  g_free (matched_model_path);
+
+  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_NULL, UNITTEST_STATECHANGE_TIMEOUT), 0);
+
+  gst_object_unref (filter1);
+  gst_object_unref (filter2);
+  gst_object_unref (sink1);
+  gst_object_unref (sink2);
+  gst_object_unref (pipeline);
+}
+
+/**
+ * @brief Test refused reload (unmatched tensors info) on a non-shared filter
+ * keeps the old interpreter alive and reports the old model path.
+ */
+TEST (nnstreamerFilterSharedModel, tfliteReloadUnmatched_n)
+{
+  gchar *pipeline_str;
+  GstElement *pipeline, *filter1, *sink1;
+  gint idx0 = 0;
+  const gchar *src_root = g_getenv ("NNSTREAMER_SOURCE_ROOT_PATH");
+  gchar *root_path = src_root ? g_strdup (src_root) : g_get_current_dir ();
+  gchar *old_model_path = g_build_filename (
+      root_path, "tests", "test_models", "models", model_name1, NULL);
+  gchar *unmatched_model_path = g_build_filename (
+      root_path, "tests", "test_models", "models", model_name3, NULL);
+  gchar *path;
+  guint old;
+  g_free (root_path);
+
+  _get_pipeline_str (&pipeline_str, model_name1, model_name1, NULL);
+  pipeline = gst_parse_launch (pipeline_str, NULL);
+  g_free (pipeline_str);
+  memset (res, 0, sizeof (res));
+
+  filter1 = gst_bin_get_by_name (GST_BIN (pipeline), "filter1");
+  ASSERT_TRUE (filter1 != NULL);
+
+  sink1 = gst_bin_get_by_name (GST_BIN (pipeline), "sink1");
+  EXPECT_NE (sink1, nullptr);
+  g_signal_connect (sink1, "new-data", (GCallback) _new_data_cb, (gpointer) &idx0);
+
+  _play_then_pause (pipeline);
+
+  old = res[0];
+  EXPECT_NE (old, 0U);
+  res[0] = 0;
+
+  /* refused reload: unmatched tensors info (float vs quant) */
+  g_object_set (filter1, "model", unmatched_model_path, NULL);
+  g_free (unmatched_model_path);
+
+  g_object_get (filter1, "model", &path, NULL);
+  EXPECT_STREQ (old_model_path, path);
+  g_free (path);
+  g_free (old_model_path);
+
+  _play_then_pause (pipeline);
+
+  /* the old, still-alive interpreter is still used */
+  EXPECT_EQ (res[0], old);
+
+  EXPECT_EQ (setPipelineStateSync (pipeline, GST_STATE_NULL, UNITTEST_STATECHANGE_TIMEOUT), 0);
+
+  gst_object_unref (filter1);
+  gst_object_unref (sink1);
   gst_object_unref (pipeline);
 }
 
