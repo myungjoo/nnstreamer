@@ -30,13 +30,6 @@ You can insert model files and their frameworks in a nnstreamer pipeline with th
 ### Tensorflow-lite
 - subplugin name: 'tensorflow1-lite'
 - subplugin name: 'tensorflow2-lite'
-- subplugin name: 'tensorflow2-lite-custom'
-
-#### How to use custom tensorflow-lite binaries
-
-If you want to use tensorflow-lite custom operators with your own tensorflow-lite custom binaries, you can use tensorflow2-lite-custom subplugin. As its name suggests, this supports tensorflow-lite 2.x versions.
-
-By default, this subplugin loads ```./libtensorflow2-lite-custom.so```, which is the user's custom tensorflow-lite binary.
 
 ### LiteRT
 - subplugin name: 'litert'
