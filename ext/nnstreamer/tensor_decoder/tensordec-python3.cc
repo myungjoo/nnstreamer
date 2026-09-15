@@ -196,6 +196,9 @@ PYDecoderCore::decode (const GstTensorsConfig *config,
   }
 
 done:
+  Py_SAFEDECREF (output);
+  Py_SAFEDECREF (raw_data);
+  Py_SAFEDECREF (in_info);
   Py_UNLOCK ();
   return ret;
 }
