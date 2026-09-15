@@ -3199,6 +3199,8 @@ done:
  * @param[in] interpreter The new interpreter to replace.
  * @param[in] replace_callback The callback function to replace with new interpreter.
  * @param[in] free_callback The callback function to destroy the old interpreter.
+ * @note The old interpreter is destroyed even if `replace_callback` does not take the new one.
+ *       The caller should verify every instance can take the new interpreter before calling this.
  */
 void
 nnstreamer_filter_shared_model_replace (void *instance, const char *key,
