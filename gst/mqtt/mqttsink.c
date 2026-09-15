@@ -567,6 +567,7 @@ gst_mqtt_sink_start (GstBaseSink * basesink)
   }
 
   if (!g_strcmp0 (DEFAULT_MQTT_PUB_TOPIC, self->mqtt_topic)) {
+    g_free (self->mqtt_topic);
     self->mqtt_topic = g_strdup_printf (DEFAULT_MQTT_PUB_TOPIC_FORMAT,
         self->mqtt_client_id);
   }
@@ -1214,7 +1215,8 @@ gst_mqtt_sink_set_mqtt_ntp_srvs (GstMqttSink * self, const gchar * pairs)
   if (hnum == 0)
     goto err_free_pair_arrs;
 
-  g_free (self->mqtt_ntp_hnames);
+  self->mqtt_ntp_num_srvs = 0;
+  g_strfreev (self->mqtt_ntp_hnames);
   self->mqtt_ntp_hnames = g_try_malloc0 ((hnum + 1) * sizeof (gchar *));
   if (!self->mqtt_ntp_hnames)
     goto err_free_pair_arrs;
@@ -1229,12 +1231,13 @@ gst_mqtt_sink_set_mqtt_ntp_srvs (GstMqttSink * self, const gchar * pairs)
     gchar **hname_port;
     gchar *hname;
     gchar *eport;
-    gulong port_ul;
+    gulong port_ul = 0;
 
     pair = pair_arrs[i];
     hname_port = g_strsplit (pair, ":", 2);
     hname = hname_port[0];
-    port_ul = strtoul (hname_port[1], &eport, 10);
+    if (g_strv_length (hname_port) == 2)
+      port_ul = strtoul (hname_port[1], &eport, 10);
     if ((port_ul == 0) || (port_ul > UINT16_MAX)) {
       self->mqtt_ntp_num_srvs--;
     } else {

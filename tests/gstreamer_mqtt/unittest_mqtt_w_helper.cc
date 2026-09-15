@@ -18,9 +18,11 @@
 #include <unittest_util.h>
 
 #include <future>
+#include <string>
 
 #include "GstMqttTestHelper.hh"
 #include "mqttcommon.h"
+#include "mqttsink.h"
 
 std::unique_ptr<GstMqttTestHelper> GstMqttTestHelper::mInstance;
 std::once_flag GstMqttTestHelper::mOnceFlag;
@@ -760,6 +762,212 @@ TEST (testMqttSinkWithHelper, sinkPushDynamicBufferSize)
         EXPECT_EQ (payload[GST_MQTT_LEN_MSG_HDR + j], (guint8) (pattern + j));
     }
   }
+
+  gst_harness_teardown (h);
+}
+
+/** The NTP host names/ports most recently handed to _capture_epoch_func () */
+static guint32 captured_ntp_hnum = 0;
+static std::vector<std::string> captured_ntp_hnames;
+static std::vector<guint16> captured_ntp_hports;
+
+/**
+ * @brief A get_epoch_func replacement that records the NTP server list mqttsink hands to it
+ */
+static int64_t
+_capture_epoch_func (uint32_t hnum, char **hnames, uint16_t *hports)
+{
+  uint32_t i;
+
+  captured_ntp_hnum = hnum;
+  captured_ntp_hnames.clear ();
+  captured_ntp_hports.clear ();
+  for (i = 0; i < hnum; ++i) {
+    captured_ntp_hnames.push_back (std::string (hnames[i]));
+    captured_ntp_hports.push_back (hports[i]);
+  }
+
+  return g_get_real_time ();
+}
+
+/**
+ * @brief Test mqttsink's ntp-srvs property parsing a well-formed list of host:port pairs (E5)
+ */
+TEST (testMqttSink, ntpSrvsParse)
+{
+  GstHarness *h = gst_harness_new ("mqttsink");
+  GstMqttSink *sink;
+  GstBuffer *in_buf;
+  GstFlowReturn ret;
+
+  ASSERT_TRUE (h != NULL);
+  GstMqttTestHelper::getInstance ().initFailFlags ();
+  GstMqttTestHelper::getInstance ().resetSendRecord ();
+
+  g_object_set (h->element, "ntp-srvs", "a.example:123,b.example:456", NULL);
+
+  sink = GST_MQTT_SINK (h->element);
+  sink->get_epoch_func = _capture_epoch_func;
+
+  in_buf = gst_harness_create_buffer (h, 4);
+  ret = gst_harness_push (h, in_buf);
+  EXPECT_EQ (ret, GST_FLOW_OK);
+
+  ASSERT_EQ (captured_ntp_hnum, 2U);
+  EXPECT_STREQ (captured_ntp_hnames[0].c_str (), "a.example");
+  EXPECT_STREQ (captured_ntp_hnames[1].c_str (), "b.example");
+  EXPECT_EQ (captured_ntp_hports[0], 123);
+  EXPECT_EQ (captured_ntp_hports[1], 456);
+  EXPECT_TRUE (sink->mqtt_ntp_hnames[captured_ntp_hnum] == NULL);
+
+  gst_harness_teardown (h);
+}
+
+/**
+ * @brief Test mqttsink's ntp-srvs property replacing a previously set server list (E5, the old
+ *        vector is released via g_strfreev (); a leak there is only visible to a leak checker)
+ */
+TEST (testMqttSink, ntpSrvsReplace)
+{
+  GstHarness *h = gst_harness_new ("mqttsink");
+  GstMqttSink *sink;
+  GstBuffer *in_buf;
+  GstFlowReturn ret;
+
+  ASSERT_TRUE (h != NULL);
+  GstMqttTestHelper::getInstance ().initFailFlags ();
+  GstMqttTestHelper::getInstance ().resetSendRecord ();
+
+  g_object_set (h->element, "ntp-srvs", "a:1,b:2,c:3", NULL);
+  g_object_set (h->element, "ntp-srvs", "d:4", NULL);
+
+  sink = GST_MQTT_SINK (h->element);
+  sink->get_epoch_func = _capture_epoch_func;
+
+  in_buf = gst_harness_create_buffer (h, 4);
+  ret = gst_harness_push (h, in_buf);
+  EXPECT_EQ (ret, GST_FLOW_OK);
+
+  ASSERT_EQ (captured_ntp_hnum, 1U);
+  EXPECT_STREQ (captured_ntp_hnames[0].c_str (), "d");
+  EXPECT_EQ (captured_ntp_hports[0], 4);
+  EXPECT_TRUE (sink->mqtt_ntp_hnames[captured_ntp_hnum] == NULL);
+
+  gst_harness_teardown (h);
+}
+
+/**
+ * @brief A helper to set ntp-srvs on a running mqttsink, push a buffer, and check the servers parsed out of it
+ */
+static void
+_check_ntp_srvs (GstHarness *h, const gchar *pairs,
+    const std::vector<std::string> &exp_names, const std::vector<guint16> &exp_ports)
+{
+  GstMqttSink *sink = GST_MQTT_SINK (h->element);
+  GstBuffer *in_buf;
+  GstFlowReturn ret;
+  gchar *sprop = NULL;
+  guint i;
+
+  g_object_set (h->element, "ntp-srvs", pairs, NULL);
+  g_object_get (h->element, "ntp-srvs", &sprop, NULL);
+  EXPECT_STREQ (sprop, pairs);
+  g_free (sprop);
+
+  captured_ntp_hnum = G_MAXUINT32;
+  in_buf = gst_harness_create_buffer (h, 4);
+  ret = gst_harness_push (h, in_buf);
+  EXPECT_EQ (ret, GST_FLOW_OK);
+
+  ASSERT_EQ (captured_ntp_hnum, (guint32) exp_names.size ()) << pairs;
+  for (i = 0; i < captured_ntp_hnum; ++i) {
+    EXPECT_STREQ (captured_ntp_hnames[i].c_str (), exp_names[i].c_str ()) << pairs;
+    EXPECT_EQ (captured_ntp_hports[i], exp_ports[i]) << pairs;
+  }
+  EXPECT_TRUE (sink->mqtt_ntp_hnames[captured_ntp_hnum] == NULL) << pairs;
+}
+
+/**
+ * @brief Test mqttsink's ntp-srvs parser surviving pairs without a colon or with empty entries (E5)
+ */
+TEST (testMqttSink, ntpSrvsMalformedPairs_n)
+{
+  GstHarness *h = gst_harness_new ("mqttsink");
+
+  ASSERT_TRUE (h != NULL);
+  GstMqttTestHelper::getInstance ().initFailFlags ();
+  GstMqttTestHelper::getInstance ().resetSendRecord ();
+  GST_MQTT_SINK (h->element)->get_epoch_func = _capture_epoch_func;
+
+  _check_ntp_srvs (h, "h:0,h:65536,h:abc,ok:7", { "ok" }, { 7 });
+  _check_ntp_srvs (h, "nocolon", {}, {});
+  _check_ntp_srvs (h, "a:1,,b:2", { "a", "b" }, { 1, 2 });
+  _check_ntp_srvs (h, "a:1,", { "a" }, { 1 });
+  _check_ntp_srvs (h, ",c:3", { "c" }, { 3 });
+  _check_ntp_srvs (h, ":", {}, {});
+  _check_ntp_srvs (h, "d:4,e", { "d" }, { 4 });
+
+  gst_harness_teardown (h);
+}
+
+/**
+ * @brief Test mqttsink's default pub-topic surviving a stop/start cycle without a double free (E5)
+ */
+TEST (testMqttSink, defaultPubTopic)
+{
+  GstHarness *h = gst_harness_new ("mqttsink");
+  GstStateChangeReturn sret;
+  gchar *client_id = NULL;
+  gchar *expected;
+  gchar *topic1 = NULL;
+  gchar *topic2 = NULL;
+
+  ASSERT_TRUE (h != NULL);
+  GstMqttTestHelper::getInstance ().initFailFlags ();
+
+  g_object_get (h->element, "client-id", &client_id, NULL);
+  g_object_get (h->element, "pub-topic", &topic1, NULL);
+  expected = g_strdup_printf ("%s/topic", client_id);
+  EXPECT_STREQ (topic1, expected);
+
+  sret = gst_element_set_state (h->element, GST_STATE_NULL);
+  EXPECT_NE (sret, GST_STATE_CHANGE_FAILURE);
+  sret = gst_element_set_state (h->element, GST_STATE_PLAYING);
+  EXPECT_NE (sret, GST_STATE_CHANGE_FAILURE);
+  gst_element_get_state (h->element, NULL, NULL, GST_CLOCK_TIME_NONE);
+
+  g_object_get (h->element, "pub-topic", &topic2, NULL);
+  EXPECT_STREQ (topic2, expected);
+
+  g_free (client_id);
+  g_free (expected);
+  g_free (topic1);
+  g_free (topic2);
+
+  gst_harness_teardown (h);
+}
+
+/**
+ * @brief Test mqttsink keeping a pub-topic set before start instead of generating the default one
+ */
+TEST (testMqttSink, userPubTopicKept)
+{
+  GstElement *sink = gst_element_factory_make ("mqttsink", NULL);
+  GstHarness *h;
+  gchar *topic = NULL;
+
+  ASSERT_TRUE (sink != NULL);
+  gst_object_ref_sink (sink);
+  g_object_set (sink, "pub-topic", "mytopic", NULL);
+
+  GstMqttTestHelper::getInstance ().initFailFlags ();
+  h = gst_harness_new_with_element (sink, "sink", NULL);
+  gst_object_unref (sink);
+  ASSERT_TRUE (h != NULL);
+
+  g_object_get (h->element, "pub-topic", &topic, NULL);
+  EXPECT_STREQ (topic, "mytopic");
+  g_free (topic);
 
   gst_harness_teardown (h);
 }
