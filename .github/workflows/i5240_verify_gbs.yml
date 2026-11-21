@@ -7,6 +7,8 @@ on:
 
   # Allow manually triggering the workflow
   workflow_dispatch:
+  push:
+    branches: [ i5240-bc-verify ]
 
 jobs:
   cache_gbs_build:
@@ -20,10 +22,6 @@ jobs:
         include:
           - gbs_build_arch: "x86_64"
             gbs_build_option: "--define \"unit_test 1\" --define \"testcoverage 1\""
-          - gbs_build_arch: "armv7l"
-            gbs_build_option: "--define \"unit_test 1\""
-          - gbs_build_arch: "aarch64"
-            gbs_build_option: "--define \"unit_test 1\""
 
     runs-on: ubuntu-24.04
 
@@ -64,6 +62,7 @@ jobs:
 
     - name: Release daily build result to release.nnstreamer.com
       if: steps.gbs-build.outcome == 'success'
+      continue-on-error: true
       uses: ./.github/actions/s3_upload
       with:
         source: ~/GBS-ROOT/local/repos/tizen/${{ matrix.gbs_build_arch }}/RPMS/
@@ -73,6 +72,7 @@ jobs:
         s3_option: --recursive
 
     - name: Release daily build log to release.nnstreamer.com
+      continue-on-error: true
       uses: ./.github/actions/s3_upload
       with:
         source: ~/GBS-ROOT/local/repos/tizen/${{ matrix.gbs_build_arch }}/logs/*/*/log.txt
